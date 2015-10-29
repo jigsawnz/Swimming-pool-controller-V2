@@ -30,6 +30,8 @@
 #include "DHT_U.h"
 #include "OneWire.h"
 #include "DallasTemperature.h"
+#include "EEPROM.h"
+
 
 //********************************************************************
 
@@ -112,6 +114,11 @@ double tempDifference;
 
 // Store incoming byte from serial and bluetooth communications.
 char inByte = 'e';
+
+// Store system status in EEPROM
+uint8_t address = 0;
+byte value;
+
 //********************************************************************
 // System flags
 bool systemON     = false;
@@ -166,6 +173,8 @@ void setup() {
   printMenu();
   
   delay(2500);
+
+  systemON = EEPROM.read(address); 
 }
 
 //********************************************************************
@@ -273,12 +282,14 @@ void loop(void) {
       break;
     case '1':  // Turn system ON
       systemON = true;
+      EEPROM.write(address, systemON);
       Serial.println(F("System is ON"));
       Serial.println();
       inByte = 'x';
       break;
     case '0':  // Turn system OFF
       systemON = false;
+      EEPROM.write(address, systemON);
       digitalWrite(RELAY_VALVE_PIN, HIGH);
       digitalWrite(RELAY_PUMP_PIN,  HIGH); 
       pumpON = false;
