@@ -32,7 +32,6 @@
 #include "DallasTemperature.h"
 #include "EEPROM.h"
 
-
 //********************************************************************
 
 /* Pinout teensy 3.0
@@ -44,7 +43,7 @@
  * Relay2                 3 *         * 22-A8
  * Relay3                 4 *         * 21-A7
  * Relay4                 5 * _______ * 20-A6
- *                        6 *|       |* 19-A5
+ * speaker                6 *|       |* 19-A5
  *                        7 *|       |* 18-A4
  * ONE_WIRE_BUS           8 *|       |* 17-A3
  * TFT_DC                 9 *|_______|* 16-A2
@@ -91,6 +90,10 @@ const uint8_t RELAY_PUMP_PIN  = 3;
 const uint8_t RELAY3_PIN      = 4;
 const uint8_t RELAY4_PIN      = 5;
 
+// Alarm speaker
+const uint8_t SPEAKER_PIN     = 6;
+bool speakerState = false;
+
 // Arrays for recording sensor data.
 const uint16_t MAX = 288;  // data every 5 min, total of 24 hours
 double domeTempArray     [ MAX ];
@@ -101,11 +104,12 @@ double solarPanelArray   [ MAX ];
 double humArray          [ MAX ];
 
 // Intervals on which to perform certain actions.
-const uint32_t REFRESH_GUI_INTERVAL =  5000;
-const uint32_t STORE_DATA_INTERVAL  =  5000; // 300000 (save every 5 min, 5 x 60 X 1000 = 300000 milliseconds
-const uint32_t SENSOR_DATA_INTERVAL =  2500; // set to slowest sensor (dht21 , 2.5seconds refresh.
-const uint32_t UPDATE_RELAY_INTERVAL = 2500; // set to slowest sensor (dht21 , 2.5seconds refresh.
+const uint32_t REFRESH_GUI_INTERVAL   = 5000;
+const uint32_t STORE_DATA_INTERVAL    = 5000; // 300000 (save every 5 min, 5 x 60 X 1000 = 300000 milliseconds
+const uint32_t SENSOR_DATA_INTERVAL   = 2500; // set to slowest sensor (dht21 , 2.5seconds refresh.
+const uint32_t UPDATE_RELAY_INTERVAL  = 2500; // 2.5seconds refresh
 const uint32_t PUMP_OVERRIDE_INTERVAL = 7200000; //(time out after 120 minutes, 120 x 60 X 1000 = 7200000 milliseconds
+const uint32_t SPEAKER_INTERVAL       = 1000;
 
 // Store sensor readings and easy referencing.
 double domeTemp, poolTemp, solarTemp, thermo2, thermo3, humidity;
@@ -121,10 +125,11 @@ byte value;
 
 //********************************************************************
 // System flags
-bool systemON     = false;
-bool valveOPEN    = false;
-bool pumpON       = false; 
-bool pumpOVERRIDE = false;
+bool systemON      = false;
+bool valveOPEN     = false;
+bool pumpON        = false; 
+bool pumpOVERRIDE  = false;
+bool sensorFAILURE = false;
 //********************************************************************
 // Temperature setpoints for relay controls 
 const double VALVE_OPEN    =  5.0;
@@ -136,6 +141,7 @@ unsigned long refreshGUITimer     = millis();
 unsigned long refreshSensorsTimer = millis();
 unsigned long updateRelayTimer    = millis();
 unsigned long pumpOverrideTimer   = 0;
+unsigned long speakerTimer        = millis();
 //********************************************************************
 
 void setup() {
@@ -151,11 +157,13 @@ void setup() {
   pinMode(RELAY_VALVE_PIN, OUTPUT); 
   pinMode(RELAY_PUMP_PIN,  OUTPUT); 
   pinMode(RELAY3_PIN,      OUTPUT); 
-  pinMode(RELAY4_PIN,      OUTPUT); 
+  pinMode(RELAY4_PIN,      OUTPUT);
+  pinMode(SPEAKER_PIN,     OUTPUT);
   digitalWrite(RELAY_VALVE_PIN, HIGH);
   digitalWrite(RELAY_PUMP_PIN,  HIGH);
   digitalWrite(RELAY3_PIN,      HIGH);
   digitalWrite(RELAY4_PIN,      HIGH);
+  digitalWrite(SPEAKER_PIN,      LOW);
   
   tft.begin();
   tft.setRotation(1);  // Landscape mode
@@ -189,6 +197,8 @@ void loop(void) {
     refreshSensorsTimer = millis();  
   if (pumpOVERRIDE && pumpOverrideTimer > millis())
     pumpOverrideTimer = millis(); 
+  if (sensorFAILURE && speakerTimer > millis())
+    speakerTimer = millis(); 
   
   if (Serial.available() > 0) // Read incoming serial data (USB)
   {
@@ -318,15 +328,15 @@ void loop(void) {
   // Store sensor data for graphs
   if (millis() - storeDataTimer >= STORE_DATA_INTERVAL)  
   { 
-    storeDataTimer = millis();
     storeSensorData();
+    storeDataTimer = millis();
   }
 
   // Update sensor data with new readings
   if (millis() - refreshSensorsTimer >= SENSOR_DATA_INTERVAL) 
   { 
-    refreshSensorsTimer = millis();
     readSensors();
+    refreshSensorsTimer = millis();
   }
 
   // Turn pump OFF after two hours when in override mode.
@@ -340,11 +350,22 @@ void loop(void) {
     }
   }
 
+  // Making beeping sound if a critical sensor isn't working.
+  if(sensorFAILURE)
+  {
+    if(millis() - speakerTimer >= SPEAKER_INTERVAL)
+    {
+      digitalWrite(SPEAKER_PIN, speakerState );
+      speakerState = !speakerState;
+      speakerTimer = millis();
+    }
+  }
+
   // Turn relays ON or OFF
   if (millis() - updateRelayTimer >= UPDATE_RELAY_INTERVAL) 
   { 
-    updateRelayTimer = millis();
     controlRelay();
+    updateRelayTimer = millis();
   }
 }
 
@@ -530,9 +551,9 @@ void readSensors()
   double t = dht.readTemperature();
   
   if isnan(h)
-    h = -127;
+    h = DEVICE_DISCONNECTED;
   if isnan(t)
-    t = -127;
+    t = DEVICE_DISCONNECTED;
 
   domeTemp = t;
   humidity = h; 
@@ -544,6 +565,15 @@ void readSensors()
   thermo2   = sensors.getTempC(Thermometer2);
   thermo3   = sensors.getTempC(Thermometer3);
   tempDifference = solarTemp - poolTemp;
+
+  // In case of sensor failure turn on audio alarm.
+  if ((poolTemp == DEVICE_DISCONNECTED) || (solarTemp == DEVICE_DISCONNECTED)) // Add more sensors if deemed critical to systems operations.
+    sensorFAILURE = true;
+  else
+  {
+    sensorFAILURE = false;
+    digitalWrite(SPEAKER_PIN, LOW);
+  }
 }
 
 //********************************************************************
