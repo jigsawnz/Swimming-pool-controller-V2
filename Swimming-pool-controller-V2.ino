@@ -1129,7 +1129,7 @@ void sendToAll(double sendDataDouble)
   
   Serial.print(sendDataDouble);
   Serial1.print(sendDataDouble);
-  if (sendDataDouble != DEVICE_DISCONNECTED)
+  if (sendDataDouble > DEVICE_DISCONNECTED && sendDataDouble <= 127.0 )
     tft.setTextColor(ILI9341_GREEN); 
   else
     tft.setTextColor(ILI9341_RED);
